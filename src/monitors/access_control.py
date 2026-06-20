@@ -1,49 +1,35 @@
 import cv2
-import os
-import numpy as np
 
-from facial_recognition import load_models, load_known_faces, recognizer_match
+from src.core.video import initialize_video_capture
+from src.core.models import load_face_models, load_known_faces, recognizer_match
+from src.utils.drawing import draw_banner
 
-def draw_banner(frame, text, color):
-    (h, w) = frame.shape[:2]
-    cv2.rectangle(frame, (0, 0), (w, 80), color, -1)
-    
-    font = cv2.FONT_HERSHEY_DUPLEX
-    font_scale = 1.5
-    thickness = 3
-    (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
-    
-    text_x = (w - text_width) // 2
-    text_y = 50
-    
-    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
-
-def main():
+def run(video_source='0', known_dir='known_workers'):
     print("Loading High-Accuracy Access Control System...")
-    detector, recognizer = load_models()
+    detector, recognizer = load_face_models()
     
-    known_dir = 'known_workers'
     known_embeddings = load_known_faces(known_dir, detector, recognizer)
     
     if not known_embeddings:
         print("Warning: No known faces enrolled. Everyone will be DENIED.")
 
-    similarity_threshold = 0.363 # SFace strict threshold
+    similarity_threshold = 0.363 
 
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Could not open webcam.")
+    frame, cap, width, height, fps, is_image = initialize_video_capture(video_source)
+    if width == 0:
         return
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     print("System Ready. Waiting for a face...")
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        if is_image:
+            if frame is None:
+                break
+        else:
+            ret, frame_read = cap.read()
+            if not ret:
+                break
+            frame = frame_read
 
         (h, w) = frame.shape[:2]
         detector.setInputSize((w, h))
@@ -60,7 +46,6 @@ def main():
                 x, y, fw, fh = box
                 area = fw * fh
                 
-                # SFace confidence is face[-1]. For YuNet, we can just rely on the detection if it exists
                 if area > largest_face_area and fw > 40 and fh > 40:
                     largest_face_area = area
                     largest_face_data = face
@@ -108,16 +93,27 @@ def main():
             
         try:
             cv2.imshow('Smart Access Control', display_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if is_image:
+                print("Image processed! Press any key in the image window to exit.")
+                cv2.waitKey(0)
                 break
+            else:
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
         except cv2.error:
             pass
 
-    cap.release()
+    if not is_image and cap is not None:
+        cap.release()
     try:
         cv2.destroyAllWindows()
     except cv2.error:
         pass
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="High-Accuracy Access Control")
+    parser.add_argument('--video', type=str, default='0', help='Path to the input video file or camera index (e.g. 0)')
+    parser.add_argument('--known_dir', type=str, default='known_workers', help='Directory containing known faces')
+    args = parser.parse_args()
+    run(args.video, args.known_dir)

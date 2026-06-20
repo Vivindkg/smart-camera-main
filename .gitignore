@@ -28,3 +28,9 @@ env/
 
 # MacOS
 .DS_Store
+
+# Confidential / Runtime Data
+known_workers/
+outputs/
+models/
+*.log

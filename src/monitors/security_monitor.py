@@ -5,19 +5,19 @@ import winsound
 import time
 import threading
 import os
-import argparse
 import wave
 import subprocess
 import imageio_ffmpeg
-from ultralytics import YOLO
 
-# --- Configuration ---
+from src.core.video import initialize_video_capture, initialize_video_writer
+from src.core.models import load_yolo_model
+
 # Audio Settings
 SAMPLE_RATE = 16000
-BLOCK_SIZE = 1000  # Smaller block size (1/16th second) catches sharp, sudden noises better
+BLOCK_SIZE = 1000  
 CALIBRATION_DURATION = 3.0
 SENSITIVITY_MULTIPLIER = 1.5
-MIN_ABSOLUTE_THRESHOLD = 0.000 # Removed entirely to test if the mic is working at all
+MIN_ABSOLUTE_THRESHOLD = 0.000 
 
 # Global State
 alarm_active = False
@@ -30,47 +30,41 @@ is_calibrating = True
 calibration_samples = []
 start_time = time.time()
 
-# Recording buffers
 recorded_audio_chunks = []
 
 def trigger_alarm(reason):
     global alarm_active, alarm_cooldown_until, status_message, status_color
     
-    # Don't trigger again if we're already alarming or in cooldown
     if alarm_active or time.time() < alarm_cooldown_until:
         return
         
     alarm_active = True
     status_message = f"ALARM: {reason.upper()}"
-    status_color = (0, 0, 255) # Red
+    status_color = (0, 0, 255) 
     print(f"\n🚨 {status_message} 🚨")
 
-    # Run the sound in a separate thread so the video doesn't freeze
     threading.Thread(target=play_siren, daemon=True).start()
 
 def play_siren():
     global alarm_active, alarm_cooldown_until, status_message, status_color
     
-    # Play siren pattern
     for _ in range(4):
         winsound.Beep(2000, 200)
         winsound.Beep(1500, 200)
         
-    # Reset alarm state
     alarm_active = False
-    alarm_cooldown_until = time.time() + 2.0 # 2 seconds cooldown
+    alarm_cooldown_until = time.time() + 2.0 
     status_message = "SYSTEM SECURE"
     status_color = (0, 255, 0)
 
 def audio_callback(indata, frames, time_info, status):
-    global audio_rms, is_calibrating, baseline_rms, calibration_samples, recorded_audio_chunks
+    global audio_rms, is_calibrating, baseline_rms, calibration_samples, recorded_audio_chunks, start_time
     
-    # Save a copy of the audio for our final recording
     recorded_audio_chunks.append(indata.copy())
     
     rms = np.sqrt(np.mean(indata**2))
     peak = np.max(np.abs(indata))
-    audio_rms = rms # Keep RMS for UI display
+    audio_rms = rms 
     
     if is_calibrating:
         calibration_samples.append(rms)
@@ -79,30 +73,18 @@ def audio_callback(indata, frames, time_info, status):
             baseline_rms = max(np.mean(calibration_samples), 0.001)
             print(f"\n[Audio] Calibration Complete. Baseline RMS: {baseline_rms:.5f}")
     else:
-        # Check for abnormal sound using PEAK amplitude to catch incredibly short, sharp sounds (like gunshots)
         trigger_peak = baseline_rms * SENSITIVITY_MULTIPLIER * 1.5
         trigger_rms = baseline_rms * SENSITIVITY_MULTIPLIER
         
-        # Debug print if it hears a loud noise that ALMOST triggered it
-        if peak > baseline_rms * 1.2:
-            print(f"[Mic Debug] Heard a sound. Peak: {peak:.4f} (Needs > {trigger_peak:.4f} to alarm) | RMS: {rms:.4f}", end='\r')
-
         if peak > trigger_peak or rms > trigger_rms:
-            print(f"\n[Mic Debug] ALARM TRIGGERED! Peak was {peak:.4f}")
             trigger_alarm(f"Loud Sound Spike (Peak: {peak:.2f})")
 
-def main():
-    parser = argparse.ArgumentParser(description="Comprehensive Security Monitor")
-    parser.add_argument('--list_audio', action='store_true', help="List all available audio input devices and exit")
-    parser.add_argument('--audio_device', type=int, default=None, help="The ID of the external microphone to use")
-    parser.add_argument('--output', type=str, default='security_recording.mp4', help="Path to save the final recording with sound")
-    args = parser.parse_args()
-
-    if args.list_audio:
+def run(list_audio=False, audio_device=None, output_path='security_recording.mp4'):
+    global start_time
+    
+    if list_audio:
         print("\nAvailable Audio Devices:")
         print(sd.query_devices())
-        print("\nFind your external mic in the list above, note its ID number, and run:")
-        print("python security_monitor.py --audio_device <ID>\n")
         return
 
     print("Initializing Comprehensive Security Monitor...")
@@ -114,13 +96,11 @@ def main():
     using_custom_model = False
     if os.path.exists(custom_model_path):
         print(f"Loading custom weapon model from {custom_model_path}...")
-        model = YOLO(custom_model_path)
+        model = load_yolo_model(custom_model_path)
         using_custom_model = True
     else:
         print("Custom weapon model not found. Using default YOLOv8s.")
-        print("Note: The default model can detect 'knife' and 'baseball bat', but NOT guns.")
-        print(f"To detect guns, place a trained YOLOv8 PyTorch model at: {custom_model_path}")
-        model = YOLO('yolov8s.pt')
+        model = load_yolo_model('yolov8s.pt')
         
     DANGEROUS_COCO_CLASSES = [43, 34]
 
@@ -134,13 +114,18 @@ def main():
     if fps == 0 or fps != fps:
         fps = 30.0
     
-    temp_video_file = "temp_video_no_audio.mp4"
+    # We must save a temp file to output, because the final file is combined with audio
+    os.makedirs('outputs', exist_ok=True)
+    basename = os.path.basename(output_path)
+    final_output_path = os.path.join('outputs', basename)
+    
+    temp_video_file = os.path.join('outputs', "temp_video_no_audio.mp4")
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(temp_video_file, fourcc, fps, (width, height))
-    print(f"Live monitoring started. Will save final video + audio to: {args.output}")
+    print(f"Live monitoring started. Will save final video + audio to: {final_output_path}")
 
-    # Start the audio stream
-    audio_stream = sd.InputStream(device=args.audio_device, callback=audio_callback, channels=1, samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE)
+    start_time = time.time()
+    audio_stream = sd.InputStream(device=audio_device, callback=audio_callback, channels=1, samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE)
     audio_stream.start()
 
     print("\nSecurity System Armed! Press 'q' to quit.")
@@ -216,13 +201,10 @@ def main():
     
     print("\nSaving audio and video...")
     
-    # Process audio
     if len(recorded_audio_chunks) > 0:
-        temp_audio_file = "temp_audio.wav"
+        temp_audio_file = os.path.join('outputs', "temp_audio.wav")
         full_audio = np.concatenate(recorded_audio_chunks, axis=0)
         
-        # sounddevice returns float32 [-1.0, 1.0], wave needs int16
-        # Clamp to avoid overflow wrap-around
         full_audio_clamped = np.clip(full_audio, -1.0, 1.0)
         audio_int16 = np.int16(full_audio_clamped * 32767)
         
@@ -233,29 +215,25 @@ def main():
             wf.writeframes(audio_int16.tobytes())
             
         print("Merging audio and video (this may take a moment)...")
-        # Get the path to ffmpeg provided by imageio-ffmpeg
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
         
-        # Combine video and audio using FFmpeg
         command = [
             ffmpeg_exe,
-            '-y', # Overwrite output if exists
+            '-y', 
             '-i', temp_video_file,
             '-i', temp_audio_file,
             '-c:v', 'copy',
             '-c:a', 'aac',
-            args.output
+            final_output_path
         ]
         
-        # Hide output to keep console clean, unless it fails
         result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             print("Error merging audio/video!")
             print(result.stderr.decode('utf-8'))
         else:
-            print(f"✅ Final recording successfully saved with sound: {args.output}")
+            print(f"✅ Final recording successfully saved with sound: {final_output_path}")
             
-        # Clean up temp files
         try:
             os.remove(temp_video_file)
             os.remove(temp_audio_file)
@@ -265,4 +243,10 @@ def main():
         print(f"Warning: No audio recorded. Video saved to {temp_video_file}")
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Comprehensive Security Monitor")
+    parser.add_argument('--list_audio', action='store_true', help="List all available audio input devices and exit")
+    parser.add_argument('--audio_device', type=int, default=None, help="The ID of the external microphone to use")
+    parser.add_argument('--output', type=str, default='security_recording.mp4', help="Path to save the final recording with sound")
+    args = parser.parse_args()
+    run(args.list_audio, args.audio_device, args.output)
