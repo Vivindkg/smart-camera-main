@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Videos
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# Models
+*.pt
+*.onnx
+*.caffemodel
+*.weights
+*.h5
+
+# Images
+*.jpg
+*.jpeg
+*.png
+
+# Virtual environments
+venv/
+env/
+.env
+
+# MacOS
+.DS_Store
